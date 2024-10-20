@@ -59,56 +59,114 @@ def main():
     st.write(f"Number of unique symbols: {data['ID.[Exchange]'].nunique()}")
     st.write(f"Date range: {data['Trading date'].min()} to {data['Trading date'].max()}")
 
-    # Allow user to select a symbol
-    symbols = sorted(data['ID.[Exchange]'].unique())
-    selected_symbol = st.selectbox('Select a symbol to visualize', symbols)
+    # Create tabs for different views
+    tab1, tab2 = st.tabs(["Single Symbol View", "Multi-Symbol Daily Comparison"])
 
-    # Filter data for the selected symbol
-    symbol_data = data[data['ID.[Exchange]'] == selected_symbol].sort_values('Trading date')
+    with tab1:
+        # Allow user to select a symbol
+        symbols = sorted(data['ID.[Exchange]'].unique())
+        selected_symbol = st.selectbox('Select a symbol to visualize', symbols)
 
-    # Allow user to select date range
-    date_range = st.date_input(
-        "Select date range",
-        value=(symbol_data['Trading date'].min(), symbol_data['Trading date'].max()),
-        min_value=symbol_data['Trading date'].min(),
-        max_value=symbol_data['Trading date'].max()
-    )
+        # Filter data for the selected symbol
+        symbol_data = data[data['ID.[Exchange]'] == selected_symbol].sort_values('Trading date')
 
-    # Filter data based on selected date range
-    filtered_data = symbol_data[
-        (symbol_data['Trading date'] >= date_range[0]) &
-        (symbol_data['Trading date'] <= date_range[1])
-    ]
+        # Allow user to select date range
+        date_range = st.date_input(
+            "Select date range",
+            value=(symbol_data['Trading date'].min(), symbol_data['Trading date'].max()),
+            min_value=symbol_data['Trading date'].min(),
+            max_value=symbol_data['Trading date'].max()
+        )
 
-    # Display basic stats for the selected symbol
-    st.subheader(f'Statistics for {selected_symbol}')
-    st.write(f"Security Type: {filtered_data['SecType'].iloc[0]}")
-    st.write(f"Number of data points: {len(filtered_data)}")
-    st.write(f"Average price: {filtered_data['Last'].mean():.2f}")
-    st.write(f"Price range: {filtered_data['Last'].min():.2f} to {filtered_data['Last'].max():.2f}")
+        # Filter data based on selected date range
+        filtered_data = symbol_data[
+            (symbol_data['Trading date'] >= date_range[0]) &
+            (symbol_data['Trading date'] <= date_range[1])
+        ]
 
-    # Create a candlestick chart
-    fig = go.Figure(data=[go.Candlestick(
-        x=filtered_data['Trading date'] + pd.to_timedelta(filtered_data['Trading time']),
-        open=filtered_data['Last'],
-        high=filtered_data['Last'],
-        low=filtered_data['Last'],
-        close=filtered_data['Last']
-    )])
+        # Display basic stats for the selected symbol
+        st.subheader(f'Statistics for {selected_symbol}')
+        st.write(f"Security Type: {filtered_data['SecType'].iloc[0]}")
+        st.write(f"Number of data points: {len(filtered_data)}")
+        st.write(f"Average price: {filtered_data['Last'].mean():.2f}")
+        st.write(f"Price range: {filtered_data['Last'].min():.2f} to {filtered_data['Last'].max():.2f}")
 
-    fig.update_layout(
-        title=f'Trading Data for {selected_symbol}',
-        xaxis_title='Date and Time',
-        yaxis_title='Price',
-        xaxis_rangeslider_visible=False
-    )
+        # Create a candlestick chart
+        fig = go.Figure(data=[go.Candlestick(
+            x=filtered_data['Trading date'] + pd.to_timedelta(filtered_data['Trading time']),
+            open=filtered_data['Last'],
+            high=filtered_data['Last'],
+            low=filtered_data['Last'],
+            close=filtered_data['Last']
+        )])
 
-    st.plotly_chart(fig)
+        fig.update_layout(
+            title=f'Trading Data for {selected_symbol}',
+            xaxis_title='Date and Time',
+            yaxis_title='Price',
+            xaxis_rangeslider_visible=False
+        )
 
-    # Display the raw data
-    if st.checkbox('Show raw data'):
-        st.subheader('Raw data')
-        st.write(filtered_data)
+        st.plotly_chart(fig)
+
+        # Display the raw data
+        if st.checkbox('Show raw data'):
+            st.subheader('Raw data')
+            st.write(filtered_data)
+    with tab2:
+        st.subheader("Multi-Symbol Daily Comparison")
+
+        # Allow user to select a specific date
+        selected_date = st.date_input(
+            "Select a date to compare symbols",
+            min_value=data['Trading date'].min(),
+            max_value=data['Trading date'].max(),
+            value=data['Trading date'].min()
+        )
+
+        # Allow user to select multiple symbols
+        all_symbols = sorted(data['ID.[Exchange]'].unique())
+        selected_symbols = st.multiselect(
+            'Select symbols to compare',
+            all_symbols,
+            default=all_symbols[:5]  # Default to first 5 symbols
+        )
+
+        if selected_symbols:
+            # Filter data for the selected date and symbols
+            daily_data = data[
+                (data['Trading date'] == selected_date) &
+                (data['ID.[Exchange]'].isin(selected_symbols))
+            ]
+
+            # Create a line plot for the selected symbols
+            fig = go.Figure()
+
+            for symbol in selected_symbols:
+                symbol_data = daily_data[daily_data['ID.[Exchange]'] == symbol]
+                fig.add_trace(go.Scatter(
+                    x=pd.to_datetime(symbol_data['Trading date'].astype(str) + ' ' + symbol_data['Trading time']),
+                    y=symbol_data['Last'],
+                    mode='lines',
+                    name=symbol
+                ))
+
+            fig.update_layout(
+                title=f'Price Comparison on {selected_date}',
+                xaxis_title='Time',
+                yaxis_title='Price',
+                legend_title='Symbols'
+            )
+
+            st.plotly_chart(fig)
+
+            # Display summary statistics
+            st.subheader('Summary Statistics')
+            summary = daily_data.groupby('ID.[Exchange]')['Last'].agg(['mean', 'min', 'max'])
+            st.write(summary)
+
+        else:
+            st.write("Please select at least one symbol to compare.")
 
 if __name__ == '__main__':
     main()

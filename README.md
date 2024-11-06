@@ -1,3 +1,7 @@
+### Description
+
+A school project to analyze upwards of 50M stocks per tick on large scale to predict trends in stock prices.
+
 ### Installation
 
 1. Create a python virtual environment `python -m venv ~/.venv`

@@ -2,11 +2,13 @@ import pandas as pd
 import os
 from datetime import datetime
 
+# Define the target stocks
+TARGET_STOCKS = {'A1EX2F.ETR', 'A2GS63.ETR', 'ALORA.FR', 'IJPHG.FR', 'MLECE.FR'}
+
 def extract_stocks(input_file='data/debs2022-gc-trading-day-08-11-21.csv', 
-                  output_file='data/extracted_stocks.csv',
-                  num_stocks=5):
+                  output_file='data/extracted_stocks.csv'):
     """
-    Extract data for a specified number of stocks from the input CSV file.
+    Extract data for specific stocks from the input CSV file.
     Selects columns by their index positions:
     0: ID 
     1: SecType
@@ -18,7 +20,6 @@ def extract_stocks(input_file='data/debs2022-gc-trading-day-08-11-21.csv',
     
     # Read the CSV file in chunks to handle large file size
     chunk_size = 100000
-    selected_stocks = set()
     chunks_to_concat = []
     
     # Specify the columns we want to keep by their index positions
@@ -36,18 +37,17 @@ def extract_stocks(input_file='data/debs2022-gc-trading-day-08-11-21.csv',
                            skiprows=9,  # Skip the metadata rows
                            comment='#'  # Skip any additional comment lines
                            ):
-        # If we haven't selected enough stocks yet, get new unique symbols
-        if len(selected_stocks) < num_stocks:
-            new_stocks = set(chunk['ID'].unique())
-            selected_stocks.update(list(new_stocks)[:num_stocks - len(selected_stocks)])
-        
-        # Filter the chunk to only include selected stocks
-        filtered_chunk = chunk[chunk['ID'].isin(selected_stocks)]
+        # Filter the chunk to only include target stocks
+        filtered_chunk = chunk[chunk['ID'].isin(TARGET_STOCKS)]
         if not filtered_chunk.empty:
             chunks_to_concat.append(filtered_chunk)
     
+    if not chunks_to_concat:
+        print("No data found for target stocks!")
+        return
+    
     # Combine all filtered chunks
-    print(f"Selected stocks: {sorted(selected_stocks)}")
+    print(f"Processing data for stocks: {sorted(TARGET_STOCKS)}")
     result_df = pd.concat(chunks_to_concat, ignore_index=True)
     
     # Sort the data by ID and timestamp
@@ -55,9 +55,13 @@ def extract_stocks(input_file='data/debs2022-gc-trading-day-08-11-21.csv',
     
     # Save to CSV
     result_df.to_csv(output_file, index=False)
-    print(f"Data extracted successfully to {output_file}")
-    print(f"Total rows in output: {len(result_df)}")
+    print(f"\nExtraction Statistics:")
+    print(f"Total rows extracted: {len(result_df)}")
+    print(f"\nRows per stock:")
+    print(result_df['ID'].value_counts().to_string())
+    print(f"\nSample of extracted data:")
+    print(result_df.head())
+    print(f"\nData extracted successfully to {output_file}")
 
 if __name__ == "__main__":
-    # Extract data for 5 stocks
     extract_stocks() 

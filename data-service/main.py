@@ -23,7 +23,7 @@ stock_data = None
 current_index = 0
 
 # Define allowed stocks
-ALLOWED_STOCKS = {'EUPE5.FR', 'IPLEM.FR', 'IUBU9.FR'}
+ALLOWED_STOCKS = {'A1EX2F.ETR'}
 
 def load_stock_data():
     """Load stock data from CSV file"""

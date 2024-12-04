@@ -21,11 +21,13 @@ active_connections: List[WebSocket] = []
 # Global variables to store the data
 stock_data = None
 current_index = 0
-stock_ids = None
+
+# Define allowed stocks
+ALLOWED_STOCKS = {'EUPE5.FR', 'IPLEM.FR', 'IUBU9.FR'}
 
 def load_stock_data():
     """Load stock data from CSV file"""
-    global stock_data, stock_ids
+    global stock_data
     csv_path = '../data/extracted_stocks.csv'
     
     if not os.path.exists(csv_path):
@@ -33,20 +35,24 @@ def load_stock_data():
     
     logger.info(f"Loading stock data from {csv_path}")
     stock_data = pd.read_csv(csv_path)
+    
+    # Filter only allowed stocks
+    stock_data = stock_data[stock_data['ID'].isin(ALLOWED_STOCKS)]
     stock_data = stock_data.sort_values(['Trading time'])
     
-    # Get unique stock IDs and ensure we have exactly 5
-    stock_ids = sorted(stock_data['ID'].unique())
-    if len(stock_ids) != 5:
-        logger.warning(f"Expected 5 stocks, but found {len(stock_ids)}")
+    # Verify we have all required stocks
+    found_stocks = set(stock_data['ID'].unique())
+    missing_stocks = ALLOWED_STOCKS - found_stocks
+    if missing_stocks:
+        logger.warning(f"Missing data for stocks: {missing_stocks}")
     
-    logger.info(f"Loaded {len(stock_data)} records for stocks: {stock_ids}")
+    logger.info(f"Loaded {len(stock_data)} records for stocks: {sorted(found_stocks)}")
 
 async def fetch_stock_data() -> Dict:
     """Fetch the next batch of stock data"""
-    global current_index, stock_data, stock_ids
+    global current_index, stock_data
     
-    if stock_data is None or stock_ids is None:
+    if stock_data is None:
         load_stock_data()
     
     # Reset index if we've reached the end
@@ -65,8 +71,8 @@ async def fetch_stock_data() -> Dict:
         "stocks": {}
     }
     
-    # Add data for all stocks
-    for stock_id in stock_ids:
+    # Add data for allowed stocks
+    for stock_id in ALLOWED_STOCKS:
         stock_row = current_batch[current_batch['ID'] == stock_id]
         if not stock_row.empty:
             current_data["stocks"][stock_id] = {

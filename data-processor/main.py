@@ -34,6 +34,20 @@ previous_emas_100: Dict[str, float] = {}
 # Store previous crossover states to detect changes
 previous_states: Dict[str, str] = {}  # 'bullish', 'bearish', or None
 
+def validate_float(value: float) -> Optional[float]:
+    """Validate and sanitize float values for JSON compliance"""
+    try:
+        if value is None:
+            return None
+        float_val = float(value)
+        # Check for non-finite values
+        if float_val in (float('inf'), float('-inf')) or float_val != float_val:  # last condition checks for NaN
+            return None
+        # Round to reasonable precision to avoid floating point issues
+        return round(float_val, 4)
+    except (ValueError, TypeError):
+        return None
+
 def calculate_ema(stock_id: str, current_price: float, period: int, ema_dict: Dict[str, float]) -> float:
     """
     Calculate EMA according to the formula:
@@ -83,55 +97,77 @@ def detect_breakout_patterns(stock_id: str, ema38: float, ema100: float) -> Opti
 
 def calculate_statistics(stock_id: str, current_price: float) -> Dict:
     """Calculate statistics for a stock based on its price history"""
-    if stock_id not in stock_prices:
-        stock_prices[stock_id] = []
-    
-    # Ensure current_price is not None
-    if current_price is None:
+    # Validate input price first
+    safe_current_price = validate_float(current_price)
+    if safe_current_price is None:
         return {
             "current_price": None,
             "price_change": None,
             "price_change_percent": None,
             "ema38": None,
             "ema100": None,
-            "samples_collected": len(stock_prices[stock_id])
+            "samples_collected": len(stock_prices.get(stock_id, []))
         }
     
-    stock_prices[stock_id].append(current_price)
+    if stock_id not in stock_prices:
+        stock_prices[stock_id] = []
+    
+    stock_prices[stock_id].append(safe_current_price)
     
     # Keep only last 100 prices for moving averages
     if len(stock_prices[stock_id]) > 100:
         stock_prices[stock_id] = stock_prices[stock_id][-100:]
     
-    # Calculate both EMAs
-    ema38 = calculate_ema(stock_id, current_price, 38, previous_emas_38)
-    ema100 = calculate_ema(stock_id, current_price, 100, previous_emas_100)
-    
-    # Detect breakout patterns
-    breakout = detect_breakout_patterns(stock_id, ema38, ema100)
-    
-    # Initialize statistics
-    stats = {
-        "current_price": round(current_price, 2),
-        "ema38": round(ema38, 2),
-        "ema100": round(ema100, 2),
-        "samples_collected": len(stock_prices[stock_id])
-    }
-    
-    # Calculate price change if we have at least 2 samples
-    if len(stock_prices[stock_id]) >= 2:
-        previous_price = stock_prices[stock_id][-2]
-        if previous_price != 0:  # Prevent division by zero
-            price_change = current_price - previous_price
-            price_change_percent = (price_change / previous_price) * 100
-            stats["price_change"] = round(price_change, 2)
-            stats["price_change_percent"] = round(price_change_percent, 2)
-    
-    # Add breakout information if detected
-    if breakout:
-        stats["breakout"] = breakout
-    
-    return stats
+    try:
+        # Calculate both EMAs
+        ema38 = calculate_ema(stock_id, safe_current_price, 38, previous_emas_38)
+        ema100 = calculate_ema(stock_id, safe_current_price, 100, previous_emas_100)
+        
+        # Validate EMAs
+        safe_ema38 = validate_float(ema38)
+        safe_ema100 = validate_float(ema100)
+        
+        # Initialize statistics with validated values
+        stats = {
+            "current_price": safe_current_price,
+            "ema38": safe_ema38,
+            "ema100": safe_ema100,
+            "samples_collected": len(stock_prices[stock_id])
+        }
+        
+        # Calculate price change if we have at least 2 samples
+        if len(stock_prices[stock_id]) >= 2:
+            previous_price = stock_prices[stock_id][-2]
+            if previous_price and previous_price != 0:  # Prevent division by zero
+                price_change = safe_current_price - previous_price
+                price_change_percent = (price_change / previous_price) * 100
+                
+                # Validate calculated changes
+                safe_price_change = validate_float(price_change)
+                safe_price_change_percent = validate_float(price_change_percent)
+                
+                if safe_price_change is not None:
+                    stats["price_change"] = safe_price_change
+                if safe_price_change_percent is not None:
+                    stats["price_change_percent"] = safe_price_change_percent
+        
+        # Only detect breakout if we have valid EMAs
+        if safe_ema38 is not None and safe_ema100 is not None:
+            breakout = detect_breakout_patterns(stock_id, safe_ema38, safe_ema100)
+            if breakout:
+                stats["breakout"] = breakout
+        
+        return stats
+    except Exception as e:
+        logger.error(f"Error calculating statistics for stock {stock_id}: {e}")
+        return {
+            "current_price": safe_current_price,
+            "price_change": None,
+            "price_change_percent": None,
+            "ema38": None,
+            "ema100": None,
+            "samples_collected": len(stock_prices[stock_id])
+        }
 
 async def connect_to_broadcaster():
     """Connect to the broadcasting service and process stock data"""
@@ -219,34 +255,40 @@ async def get_stock(stock_id: str):
 
 @app.get("/api/stocks")
 async def get_stocks_data():
-    """
-    Get current EMA values and prices for all stocks.
-    Returns:
-        List of stocks with their current prices, EMAs, and any breakout patterns
-    """
+    """Get current EMA values and prices for all stocks."""
     if not latest_tick_data or "stocks" not in latest_tick_data:
         raise HTTPException(status_code=404, detail="No stock data available")
     
-    stocks_data = []
-    for stock_id, stock_info in latest_tick_data["stocks"].items():
-        stock_data = {
-            "stock_id": stock_id,
+    try:
+        stocks_data = []
+        for stock_id, stock_info in latest_tick_data["stocks"].items():
+            try:
+                stock_data = {
+                    "stock_id": stock_id,
+                    "timestamp": latest_tick_data["timestamp"],
+                    "trading_time": latest_tick_data.get("trading_time", ""),
+                    "trading_date": latest_tick_data.get("trading_date", ""),
+                    "current_price": validate_float(stock_info.get("current_price")),
+                    "ema38": validate_float(stock_info.get("ema38")),
+                    "ema100": validate_float(stock_info.get("ema100")),
+                    "breakout": stock_info.get("breakout"),
+                    "price_change": validate_float(stock_info.get("price_change")),
+                    "price_change_percent": validate_float(stock_info.get("price_change_percent"))
+                }
+                # Remove None values to keep response clean
+                stock_data = {k: v for k, v in stock_data.items() if v is not None}
+                stocks_data.append(stock_data)
+            except Exception as e:
+                logger.error(f"Error processing stock {stock_id}: {e}")
+                continue
+        
+        return {
             "timestamp": latest_tick_data["timestamp"],
-            "trading_time": latest_tick_data["trading_time"],
-            "trading_date": latest_tick_data["trading_date"],
-            "current_price": stock_info.get("current_price"),
-            "ema38": stock_info.get("ema38"),
-            "ema100": stock_info.get("ema100"),
-            "breakout": stock_info.get("breakout"),
-            "price_change": stock_info.get("price_change"),
-            "price_change_percent": stock_info.get("price_change_percent")
+            "stocks": stocks_data
         }
-        stocks_data.append(stock_data)
-    
-    return JSONResponse(content={
-        "timestamp": latest_tick_data["timestamp"],
-        "stocks": stocks_data
-    })
+    except Exception as e:
+        logger.error(f"Error in get_stocks_data: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error processing stock data")
 
 @app.get("/api/stocks/{stock_id}/ema")
 async def get_stock_ema(stock_id: str):

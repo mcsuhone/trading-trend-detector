@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table"
 import { Badge } from "./components/ui/badge"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
+import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
+import { AlertCircle } from "lucide-react"
+import { useToast } from "./components/ui/use-toast"
 
 interface StockData {
   stock_id: string
@@ -24,35 +27,57 @@ interface ApiResponse {
 function App() {
   const [stocksData, setStocksData] = useState<ApiResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const { toast } = useToast()
 
   useEffect(() => {
-    const fetchData = async () => {
-      try {
-        const response = await fetch('http://localhost:8002/api/stocks')
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`)
-        }
-        const data = await response.json()
-        if (!data.stocks || !Array.isArray(data.stocks)) {
-          throw new Error('Invalid data format received from server')
-        }
-        setStocksData(data)
+    const connectWebSocket = () => {
+      const ws = new WebSocket('ws://localhost:8002/ws')
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        console.log('Connected to WebSocket')
         setError(null)
-      } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Failed to fetch stock data'
-        setError(`Error: ${errorMessage}. Make sure the backend server is running on port 8002.`)
-        console.error(err)
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          setStocksData(data)
+
+          // Check for breakouts and show notifications
+          data.stocks.forEach((stock: StockData) => {
+            if (stock.breakout) {
+              toast({
+                title: `${stock.breakout} Alert!`,
+                description: `${stock.stock_id} at $${stock.current_price.toFixed(2)}`,
+                variant: stock.breakout === 'BULLISH_BREAKOUT' ? 'default' : 'destructive',
+              })
+            }
+          })
+        } catch (err) {
+          console.error('Error parsing WebSocket data:', err)
+        }
+      }
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error)
+        setError('WebSocket connection error')
+      }
+
+      ws.onclose = () => {
+        console.log('WebSocket closed, attempting to reconnect...')
+        setTimeout(connectWebSocket, 5000)
       }
     }
 
-    // Initial fetch
-    fetchData()
+    connectWebSocket()
 
-    // Set up polling every 1 second
-    const interval = setInterval(fetchData, 1000)
-
-    // Cleanup
-    return () => clearInterval(interval)
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close()
+      }
+    }
   }, [])
 
   const getBreakoutBadge = (breakout?: string) => {
@@ -75,6 +100,14 @@ function App() {
     <div className="min-h-screen bg-gray-100 p-8">
       <div className="max-w-7xl mx-auto">
         <h1 className="text-3xl font-bold mb-8">Stock Market Dashboard</h1>
+        
+        {error && (
+          <Alert variant="destructive" className="mb-8">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Error</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
         
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
           {/* Summary Cards */}
@@ -192,14 +225,6 @@ function App() {
             </Card>
           </TabsContent>
         </Tabs>
-
-        {error && (
-          <Card className="mt-4 bg-red-50">
-            <CardContent className="pt-6">
-              <p className="text-red-500">{error}</p>
-            </CardContent>
-          </Card>
-        )}
       </div>
     </div>
   )

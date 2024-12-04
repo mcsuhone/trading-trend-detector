@@ -1,13 +1,13 @@
 import asyncio
 import json
 import websockets
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from datetime import datetime
 import logging
-from typing import Dict, Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List, Set
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,11 +18,14 @@ app = FastAPI(title="Stock Data Consumer Service")
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Store active WebSocket connections
+active_connections: Set[WebSocket] = set()
 
 # Store the latest tick data
 latest_tick_data: Dict = {}
@@ -169,6 +172,18 @@ def calculate_statistics(stock_id: str, current_price: float) -> Dict:
             "samples_collected": len(stock_prices[stock_id])
         }
 
+async def broadcast_to_clients(data: dict):
+    """Broadcast data to all connected WebSocket clients"""
+    if not active_connections:
+        return
+    
+    for connection in active_connections.copy():
+        try:
+            await connection.send_json(data)
+        except Exception as e:
+            logger.error(f"Error broadcasting to client: {e}")
+            active_connections.remove(connection)
+
 async def connect_to_broadcaster():
     """Connect to the broadcasting service and process stock data"""
     while True:
@@ -221,6 +236,24 @@ async def connect_to_broadcaster():
                         "trading_date": trading_date,
                         "stocks": processed_stocks
                     }
+                    
+                    # Broadcast to WebSocket clients
+                    await broadcast_to_clients({
+                        "timestamp": latest_tick_data["timestamp"],
+                        "stocks": [
+                            {
+                                "stock_id": stock_id,
+                                "current_price": validate_float(info.get("current_price")),
+                                "ema38": validate_float(info.get("ema38")),
+                                "ema100": validate_float(info.get("ema100")),
+                                "breakout": info.get("breakout"),
+                                "price_change": validate_float(info.get("price_change")),
+                                "price_change_percent": validate_float(info.get("price_change_percent")),
+                                "trading_time": trading_time
+                            }
+                            for stock_id, info in processed_stocks.items()
+                        ]
+                    })
 
         except Exception as e:
             logger.error(f"Connection error: {e}")
@@ -348,6 +381,44 @@ async def get_breakouts():
         "timestamp": latest_tick_data["timestamp"],
         "breakouts": breakouts
     })
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for streaming stock data"""
+    await websocket.accept()
+    active_connections.add(websocket)
+    
+    try:
+        # Send initial data
+        if latest_tick_data:
+            await websocket.send_json({
+                "timestamp": latest_tick_data["timestamp"],
+                "stocks": [
+                    {
+                        "stock_id": stock_id,
+                        "current_price": validate_float(info.get("current_price")),
+                        "ema38": validate_float(info.get("ema38")),
+                        "ema100": validate_float(info.get("ema100")),
+                        "breakout": info.get("breakout"),
+                        "price_change": validate_float(info.get("price_change")),
+                        "price_change_percent": validate_float(info.get("price_change_percent")),
+                        "trading_time": latest_tick_data.get("trading_time")
+                    }
+                    for stock_id, info in latest_tick_data["stocks"].items()
+                ]
+            })
+        
+        # Keep connection alive and handle client messages if needed
+        while True:
+            data = await websocket.receive_text()
+            # Handle any client messages here if needed
+            
+    except WebSocketDisconnect:
+        logger.info("Client disconnected")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        active_connections.remove(websocket)
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8002, reload=True)

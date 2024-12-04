@@ -5,59 +5,66 @@ from datetime import datetime
 import json
 import logging
 import uvicorn
-import random
+import pandas as pd
 from typing import List, Dict
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Sample data configuration
-SAMPLE_DATA = [
-    {"symbol": "AAPL", "base_price": 175.34, "volatility": 2.50, "volume_base": 1000000},
-    {"symbol": "GOOGL", "base_price": 147.68, "volatility": 3.20, "volume_base": 800000},
-    {"symbol": "MSFT", "base_price": 415.32, "volatility": 2.80, "volume_base": 900000},
-    {"symbol": "AMZN", "base_price": 178.35, "volatility": 3.50, "volume_base": 750000},
-    {"symbol": "META", "base_price": 510.92, "volatility": 4.00, "volume_base": 600000},
-    {"symbol": "TSLA", "base_price": 172.63, "volatility": 5.00, "volume_base": 1200000},
-    {"symbol": "NVDA", "base_price": 881.65, "volatility": 4.50, "volume_base": 850000},
-    {"symbol": "JPM", "base_price": 183.27, "volatility": 1.80, "volume_base": 500000},
-    {"symbol": "V", "base_price": 279.85, "volatility": 1.50, "volume_base": 400000},
-    {"symbol": "WMT", "base_price": 162.14, "volatility": 1.20, "volume_base": 300000}
-]
 
 app = FastAPI(title="Stock Data Broadcasting Service")
 
 # Store active websocket connections
 active_connections: List[WebSocket] = []
 
-def generate_realistic_price_movement(base_price: float, volatility: float) -> float:
-    movement = random.gauss(0, volatility)
-    percentage_change = movement / 100
-    new_price = base_price * (1 + percentage_change)
-    return round(new_price, 2)
+# Global variable to store the data
+stock_data = None
+current_index = 0
 
-def generate_realistic_volume(base_volume: int) -> int:
-    variation = random.uniform(0.7, 1.3)
-    return int(base_volume * variation)
+def load_stock_data():
+    """Load stock data from CSV file"""
+    global stock_data
+    csv_path = '../data/extracted_stocks.csv'
+    
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"Could not find {csv_path}. Please run data_extractor.py first.")
+    
+    logger.info(f"Loading stock data from {csv_path}")
+    stock_data = pd.read_csv(csv_path)
+    stock_data = stock_data.sort_values(['Trading time'])
+    logger.info(f"Loaded {len(stock_data)} records for {len(stock_data['ID'].unique())} stocks")
 
 async def fetch_stock_data() -> Dict:
-    """Generate sample stock data with realistic movements"""
+    """Fetch the next batch of stock data"""
+    global current_index, stock_data
+    
+    if stock_data is None:
+        load_stock_data()
+    
+    # Get current timestamp's data
     current_data = {}
     
-    for stock in SAMPLE_DATA:
-        symbol = stock["symbol"]
-        current_price = generate_realistic_price_movement(
-            stock["base_price"], 
-            stock["volatility"]
-        )
-        current_volume = generate_realistic_volume(stock["volume_base"])
-        
-        current_data[symbol] = {
-            "price": current_price,
-            "volume": current_volume,
-            "change": round(((current_price - stock["base_price"]) / stock["base_price"]) * 100, 2)
+    # Reset index if we've reached the end
+    if current_index >= len(stock_data):
+        current_index = 0
+        logger.info("Reached end of data, starting over")
+    
+    # Get all records for the current timestamp
+    current_time = stock_data.iloc[current_index]['Trading time']
+    current_batch = stock_data[stock_data['Trading time'] == current_time]
+    
+    for _, row in current_batch.iterrows():
+        stock_id = row['ID']
+        current_data[stock_id] = {
+            "price": row['Last'],
+            "trading_time": row['Trading time'],
+            "trading_date": row['Trading date'],
+            "sec_type": row['SecType']
         }
+    
+    # Move to next timestamp
+    current_index += len(current_batch)
     
     return current_data
 
@@ -79,19 +86,21 @@ async def broadcast_stock_data(data: Dict):
             active_connections.remove(connection)
 
 async def stock_data_worker():
-    """Worker that generates and broadcasts stock data every 5 minutes"""
+    """Worker that streams stock data every second"""
     while True:
         try:
             data = await fetch_stock_data()
             await broadcast_stock_data(data)
-            logger.info(f"Generated and broadcast data for {len(data)} symbols")
-            await asyncio.sleep(60)
+            logger.info(f"Broadcast data for {len(data)} stocks")
+            await asyncio.sleep(1)  # Stream data every second
         except Exception as e:
             logger.error(f"Error in worker: {e}")
             await asyncio.sleep(10)
 
 @app.on_event("startup")
 async def startup():
+    # Load the data first
+    load_stock_data()
     # Start the worker
     asyncio.create_task(stock_data_worker())
 
@@ -116,4 +125,4 @@ async def websocket_endpoint(websocket: WebSocket):
         active_connections.remove(websocket)
 
 if __name__ == "__main__":
-    uvicorn.run("broadcaster:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

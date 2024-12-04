@@ -8,13 +8,11 @@ def extract_stocks(input_file='data/debs2022-gc-trading-day-08-11-21.csv',
     """
     Extract data for a specified number of stocks from the input CSV file.
     Selects columns by their index positions:
-    0: Symbol
+    0: ID 
     1: SecType
-    3: Last
-    4: Last volume
-    6: Trading time
-    7: Total volume
-    8: Mid price
+    21: Last
+    23: Trading time
+    26: Trading date
     """
     print(f"Starting data extraction from {input_file}")
     
@@ -24,9 +22,8 @@ def extract_stocks(input_file='data/debs2022-gc-trading-day-08-11-21.csv',
     chunks_to_concat = []
     
     # Specify the columns we want to keep by their index positions
-    columns_to_keep = [0, 1, 3, 4, 6, 7, 8]  # Corresponding to the required fields
-    column_names = ['Symbol', 'SecType', 'Last', 'Last volume', 
-                   'Trading time', 'Total volume', 'Mid price']
+    columns_to_keep = [0, 1, 21, 23, 26]  # Corresponding to the required fields
+    column_names = ['ID', 'SecType', 'Last', 'Trading time', 'Trading date']
     
     # Create a directory for the output file if it doesn't exist
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
@@ -41,11 +38,11 @@ def extract_stocks(input_file='data/debs2022-gc-trading-day-08-11-21.csv',
                            ):
         # If we haven't selected enough stocks yet, get new unique symbols
         if len(selected_stocks) < num_stocks:
-            new_stocks = set(chunk['Symbol'].unique())
+            new_stocks = set(chunk['ID'].unique())
             selected_stocks.update(list(new_stocks)[:num_stocks - len(selected_stocks)])
         
         # Filter the chunk to only include selected stocks
-        filtered_chunk = chunk[chunk['Symbol'].isin(selected_stocks)]
+        filtered_chunk = chunk[chunk['ID'].isin(selected_stocks)]
         if not filtered_chunk.empty:
             chunks_to_concat.append(filtered_chunk)
     
@@ -53,8 +50,8 @@ def extract_stocks(input_file='data/debs2022-gc-trading-day-08-11-21.csv',
     print(f"Selected stocks: {sorted(selected_stocks)}")
     result_df = pd.concat(chunks_to_concat, ignore_index=True)
     
-    # Sort the data by symbol and timestamp
-    result_df = result_df.sort_values(['Symbol', 'Trading time'])
+    # Sort the data by ID and timestamp
+    result_df = result_df.sort_values(['ID', 'Trading time'])
     
     # Save to CSV
     result_df.to_csv(output_file, index=False)

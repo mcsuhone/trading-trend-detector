@@ -25,7 +25,6 @@ last_known_prices = {}  # Dictionary to store last known prices for each stock
 
 # Define allowed stocks
 ALLOWED_STOCKS = {'A1EX2F.ETR', 'ALORA.FR', 'IJPHG.FR'}
-# ALLOWED_STOCKS = {'ALORA.FR'}
 
 def load_stock_data():
     """Load stock data from CSV file"""

@@ -72,11 +72,10 @@ def calculate_ema(stock_id: str, current_price: float, period: int, ema_dict: Di
     
     return ema
 
-def detect_breakout_patterns(stock_id: str, ema38: float, ema100: float) -> Optional[str]:
+def detect_breakout_patterns(stock_id: str, ema38: float, ema100: float) -> dict:
     """
     Detect breakout patterns based on EMA crossovers.
-    Bullish breakout: EMA38 > EMA100 and previous EMA38 <= EMA100
-    Bearish breakout: EMA38 < EMA100 and previous EMA38 >= EMA100
+    Returns a dict with boolean flags for bullish and bearish breakouts.
     """
     current_state = None
     
@@ -88,17 +87,25 @@ def detect_breakout_patterns(stock_id: str, ema38: float, ema100: float) -> Opti
     # Get previous state
     prev_state = previous_states.get(stock_id)
     
-    # Update state
-    previous_states[stock_id] = current_state
+    # Initialize breakout flags
+    breakouts = {
+        "is_bullish_breakout": False,
+        "is_bearish_breakout": False
+    }
     
     # Detect crossovers
     if prev_state != current_state and prev_state is not None:
         if current_state == 'bullish':
-            return 'BULLISH_BREAKOUT'
+            breakouts["is_bullish_breakout"] = True
+            logger.info(f"Detected BULLISH breakout for {stock_id} - EMA38: {ema38:.2f} crossed above EMA100: {ema100:.2f}")
         elif current_state == 'bearish':
-            return 'BEARISH_BREAKOUT'
+            breakouts["is_bearish_breakout"] = True
+            logger.info(f"Detected BEARISH breakout for {stock_id} - EMA38: {ema38:.2f} crossed below EMA100: {ema100:.2f}")
     
-    return None
+    # Update state
+    previous_states[stock_id] = current_state
+    
+    return breakouts
 
 def calculate_statistics(stock_id: str, current_price: float) -> Dict:
     """Calculate statistics for a stock based on its price history"""
@@ -111,7 +118,9 @@ def calculate_statistics(stock_id: str, current_price: float) -> Dict:
             "price_change_percent": None,
             "ema38": None,
             "ema100": None,
-            "samples_collected": len(stock_prices.get(stock_id, []))
+            "samples_collected": len(stock_prices.get(stock_id, [])),
+            "is_bullish_breakout": False,
+            "is_bearish_breakout": False
         }
     
     # Initialize price history for this stock if not exists
@@ -144,7 +153,9 @@ def calculate_statistics(stock_id: str, current_price: float) -> Dict:
             "current_price": safe_current_price,
             "ema38": safe_ema38,
             "ema100": safe_ema100,
-            "samples_collected": len(stock_prices[stock_id])
+            "samples_collected": len(stock_prices[stock_id]),
+            "is_bullish_breakout": False,
+            "is_bearish_breakout": False
         }
         
         # Calculate price change if we have at least 2 samples
@@ -165,9 +176,8 @@ def calculate_statistics(stock_id: str, current_price: float) -> Dict:
         
         # Only detect breakout if we have valid EMAs and enough samples
         if safe_ema38 is not None and safe_ema100 is not None and len(stock_prices[stock_id]) > 2:
-            breakout = detect_breakout_patterns(stock_id, safe_ema38, safe_ema100)
-            if breakout:
-                stats["breakout"] = breakout
+            breakouts = detect_breakout_patterns(stock_id, safe_ema38, safe_ema100)
+            stats.update(breakouts)
         
         return stats
     except Exception as e:
@@ -178,7 +188,9 @@ def calculate_statistics(stock_id: str, current_price: float) -> Dict:
             "price_change_percent": None,
             "ema38": None,
             "ema100": None,
-            "samples_collected": len(stock_prices[stock_id])
+            "samples_collected": len(stock_prices[stock_id]),
+            "is_bullish_breakout": False,
+            "is_bearish_breakout": False
         }
 
 async def broadcast_to_clients(data: dict):
@@ -186,9 +198,37 @@ async def broadcast_to_clients(data: dict):
     if not active_connections:
         return
     
+    # Format the data for the frontend
+    formatted_data = {
+        "timestamp": data.get("timestamp"),
+        "stocks": [
+            {
+                "stock_id": stock.get("stock_id"),
+                "current_price": validate_float(stock.get("current_price")),
+                "ema38": validate_float(stock.get("ema38")),
+                "ema100": validate_float(stock.get("ema100")),
+                "is_bullish_breakout": bool(stock.get("is_bullish_breakout")),
+                "is_bearish_breakout": bool(stock.get("is_bearish_breakout")),
+                "price_change": validate_float(stock.get("price_change")),
+                "price_change_percent": validate_float(stock.get("price_change_percent")),
+                "trading_time": data.get("trading_time")
+            }
+            for stock in data.get("stocks", [])
+            if stock.get("current_price") is not None
+        ]
+    }
+    
+    # Log breakout events
+    for stock in formatted_data["stocks"]:
+        if stock["is_bullish_breakout"]:
+            logger.info(f"🚨 {stock['stock_id']}: Bullish breakout detected at price {stock['current_price']}")
+        elif stock["is_bearish_breakout"]:
+            logger.info(f"🚨 {stock['stock_id']}: Bearish breakout detected at price {stock['current_price']}")
+    
+    # Send to all connected clients
     for connection in active_connections.copy():
         try:
-            await connection.send_json(data)
+            await connection.send_json(formatted_data)
         except Exception as e:
             logger.error(f"Error broadcasting to client: {e}")
             active_connections.remove(connection)
@@ -213,29 +253,44 @@ async def connect_to_broadcaster():
                     logger.info(f"\nProcessing data for {len(stocks_data)} stocks at {trading_time}")
                     
                     # Process each stock
-                    processed_stocks = {}
+                    processed_stocks = []
                     for stock_id, stock_info in stocks_data.items():
                         try:
                             current_price = float(stock_info.get("price")) if stock_info.get("price") is not None else None
                             stats = calculate_statistics(stock_id, current_price)
                             
-                            processed_stocks[stock_id] = {
-                                **stock_info,  # Include original data
-                                **stats,       # Add calculated statistics
+                            processed_stock = {
+                                "stock_id": stock_id,
+                                "current_price": stats.get("current_price"),
+                                "ema38": stats.get("ema38"),
+                                "ema100": stats.get("ema100"),
+                                "is_bullish_breakout": stats.get("is_bullish_breakout", False),
+                                "is_bearish_breakout": stats.get("is_bearish_breakout", False),
+                                "price_change": stats.get("price_change"),
+                                "price_change_percent": stats.get("price_change_percent"),
+                                "samples_collected": stats.get("samples_collected", 0)
                             }
+                            processed_stocks.append(processed_stock)
                             
                             # Log EMAs and any breakout patterns
-                            log_msg = f"Stock {stock_id}: Price={current_price:.2f}, EMA38={stats['ema38']:.2f}, EMA100={stats['ema100']:.2f}"
-                            if 'breakout' in stats:
-                                log_msg += f" 🚨 {stats['breakout']} DETECTED! 🚨"
-                            logger.info(log_msg)
+                            if processed_stock["current_price"] is not None:
+                                log_msg = f"Stock {stock_id}: Price={processed_stock['current_price']:.2f}"
+                                if processed_stock["ema38"] is not None:
+                                    log_msg += f", EMA38={processed_stock['ema38']:.2f}"
+                                if processed_stock["ema100"] is not None:
+                                    log_msg += f", EMA100={processed_stock['ema100']:.2f}"
+                                if processed_stock["is_bullish_breakout"]:
+                                    log_msg += " 🚨 BULLISH BREAKOUT DETECTED! 🚨"
+                                elif processed_stock["is_bearish_breakout"]:
+                                    log_msg += " 🚨 BEARISH BREAKOUT DETECTED! 🚨"
+                                logger.info(log_msg)
                             
                         except Exception as e:
                             logger.error(f"Error processing stock {stock_id}: {e}")
-                            processed_stocks[stock_id] = {
-                                **stock_info,
+                            processed_stocks.append({
+                                "stock_id": stock_id,
                                 "error": str(e)
-                            }
+                            })
                     
                     # Update latest tick data with processed information
                     global latest_tick_data
@@ -247,22 +302,7 @@ async def connect_to_broadcaster():
                     }
                     
                     # Broadcast to WebSocket clients
-                    await broadcast_to_clients({
-                        "timestamp": latest_tick_data["timestamp"],
-                        "stocks": [
-                            {
-                                "stock_id": stock_id,
-                                "current_price": validate_float(info.get("current_price")),
-                                "ema38": validate_float(info.get("ema38")),
-                                "ema100": validate_float(info.get("ema100")),
-                                "breakout": info.get("breakout"),
-                                "price_change": validate_float(info.get("price_change")),
-                                "price_change_percent": validate_float(info.get("price_change_percent")),
-                                "trading_time": trading_time
-                            }
-                            for stock_id, info in processed_stocks.items()
-                        ]
-                    })
+                    await broadcast_to_clients(latest_tick_data)
 
         except Exception as e:
             logger.error(f"Connection error: {e}")
@@ -284,14 +324,19 @@ async def get_stock(stock_id: str):
     if not latest_tick_data or "stocks" not in latest_tick_data:
         return {"error": "No data available"}
     
-    stock_data = latest_tick_data["stocks"].get(stock_id)
+    # Find the stock in the list
+    stock_data = next(
+        (stock for stock in latest_tick_data["stocks"] if stock.get("stock_id") == stock_id),
+        None
+    )
+    
     if not stock_data:
         return {"error": f"No data available for stock {stock_id}"}
     
     return {
-        "timestamp": latest_tick_data["timestamp"],
-        "trading_time": latest_tick_data["trading_time"],
-        "trading_date": latest_tick_data["trading_date"],
+        "timestamp": latest_tick_data.get("timestamp"),
+        "trading_time": latest_tick_data.get("trading_time"),
+        "trading_date": latest_tick_data.get("trading_date"),
         "data": stock_data
     }
 
@@ -303,29 +348,30 @@ async def get_stocks_data():
     
     try:
         stocks_data = []
-        for stock_id, stock_info in latest_tick_data["stocks"].items():
+        for stock in latest_tick_data["stocks"]:
             try:
                 stock_data = {
-                    "stock_id": stock_id,
-                    "timestamp": latest_tick_data["timestamp"],
+                    "stock_id": stock.get("stock_id"),
+                    "timestamp": latest_tick_data.get("timestamp"),
                     "trading_time": latest_tick_data.get("trading_time", ""),
                     "trading_date": latest_tick_data.get("trading_date", ""),
-                    "current_price": validate_float(stock_info.get("current_price")),
-                    "ema38": validate_float(stock_info.get("ema38")),
-                    "ema100": validate_float(stock_info.get("ema100")),
-                    "breakout": stock_info.get("breakout"),
-                    "price_change": validate_float(stock_info.get("price_change")),
-                    "price_change_percent": validate_float(stock_info.get("price_change_percent"))
+                    "current_price": validate_float(stock.get("current_price")),
+                    "ema38": validate_float(stock.get("ema38")),
+                    "ema100": validate_float(stock.get("ema100")),
+                    "is_bullish_breakout": bool(stock.get("is_bullish_breakout")),
+                    "is_bearish_breakout": bool(stock.get("is_bearish_breakout")),
+                    "price_change": validate_float(stock.get("price_change")),
+                    "price_change_percent": validate_float(stock.get("price_change_percent"))
                 }
                 # Remove None values to keep response clean
                 stock_data = {k: v for k, v in stock_data.items() if v is not None}
                 stocks_data.append(stock_data)
             except Exception as e:
-                logger.error(f"Error processing stock {stock_id}: {e}")
+                logger.error(f"Error processing stock {stock.get('stock_id')}: {e}")
                 continue
         
         return {
-            "timestamp": latest_tick_data["timestamp"],
+            "timestamp": latest_tick_data.get("timestamp"),
             "stocks": stocks_data
         }
     except Exception as e:
@@ -357,7 +403,8 @@ async def get_stock_ema(stock_id: str):
             "current_price": stock_data.get("current_price"),
             "ema38": stock_data.get("ema38"),
             "ema100": stock_data.get("ema100"),
-            "breakout": stock_data.get("breakout"),
+            "is_bullish_breakout": bool(stock_data.get("is_bullish_breakout")),
+            "is_bearish_breakout": bool(stock_data.get("is_bearish_breakout")),
             "price_change": stock_data.get("price_change"),
             "price_change_percent": stock_data.get("price_change_percent"),
             "samples_collected": stock_data.get("samples_collected")
@@ -375,19 +422,20 @@ async def get_breakouts():
         raise HTTPException(status_code=404, detail="No stock data available")
     
     breakouts = []
-    for stock_id, stock_info in latest_tick_data["stocks"].items():
-        if "breakout" in stock_info:
+    for stock in latest_tick_data["stocks"]:  # Changed from .items() to direct iteration
+        if stock.get("is_bullish_breakout") or stock.get("is_bearish_breakout"):
             breakouts.append({
-                "stock_id": stock_id,
-                "breakout_type": stock_info["breakout"],
-                "current_price": stock_info.get("current_price"),
-                "ema38": stock_info.get("ema38"),
-                "ema100": stock_info.get("ema100"),
-                "trading_time": latest_tick_data["trading_time"]
+                "stock_id": stock.get("stock_id"),
+                "is_bullish_breakout": stock.get("is_bullish_breakout", False),
+                "is_bearish_breakout": stock.get("is_bearish_breakout", False),
+                "current_price": stock.get("current_price"),
+                "ema38": stock.get("ema38"),
+                "ema100": stock.get("ema100"),
+                "trading_time": latest_tick_data.get("trading_time")
             })
     
     return JSONResponse(content={
-        "timestamp": latest_tick_data["timestamp"],
+        "timestamp": latest_tick_data.get("timestamp"),
         "breakouts": breakouts
     })
 
@@ -400,22 +448,24 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         # Send initial data
         if latest_tick_data:
-            await websocket.send_json({
-                "timestamp": latest_tick_data["timestamp"],
+            formatted_data = {
+                "timestamp": latest_tick_data.get("timestamp"),
                 "stocks": [
                     {
-                        "stock_id": stock_id,
-                        "current_price": validate_float(info.get("current_price")),
-                        "ema38": validate_float(info.get("ema38")),
-                        "ema100": validate_float(info.get("ema100")),
-                        "breakout": info.get("breakout"),
-                        "price_change": validate_float(info.get("price_change")),
-                        "price_change_percent": validate_float(info.get("price_change_percent")),
+                        "stock_id": stock.get("stock_id"),
+                        "current_price": validate_float(stock.get("current_price")),
+                        "ema38": validate_float(stock.get("ema38")),
+                        "ema100": validate_float(stock.get("ema100")),
+                        "is_bullish_breakout": bool(stock.get("is_bullish_breakout")),
+                        "is_bearish_breakout": bool(stock.get("is_bearish_breakout")),
+                        "price_change": validate_float(stock.get("price_change")),
+                        "price_change_percent": validate_float(stock.get("price_change_percent")),
                         "trading_time": latest_tick_data.get("trading_time")
                     }
-                    for stock_id, info in latest_tick_data["stocks"].items()
+                    for stock in latest_tick_data.get("stocks", [])
                 ]
-            })
+            }
+            await websocket.send_json(formatted_data)
         
         # Keep connection alive and handle client messages if needed
         while True:

@@ -21,13 +21,15 @@ active_connections: List[WebSocket] = []
 # Global variables to store the data
 stock_data = None
 current_index = 0
+last_known_prices = {}  # Dictionary to store last known prices for each stock
 
 # Define allowed stocks
-ALLOWED_STOCKS = {'A1EX2F.ETR'}
+ALLOWED_STOCKS = {'A1EX2F.ETR', 'ALORA.FR', 'IJPHG.FR'}
+# ALLOWED_STOCKS = {'ALORA.FR'}
 
 def load_stock_data():
     """Load stock data from CSV file"""
-    global stock_data
+    global stock_data, last_known_prices
     csv_path = '../data/extracted_stocks.csv'
     
     if not os.path.exists(csv_path):
@@ -36,9 +38,15 @@ def load_stock_data():
     logger.info(f"Loading stock data from {csv_path}")
     stock_data = pd.read_csv(csv_path)
     
+    # Initialize last known prices
+    last_known_prices = {stock: None for stock in ALLOWED_STOCKS}
+    
     # Filter only allowed stocks
     stock_data = stock_data[stock_data['ID'].isin(ALLOWED_STOCKS)]
     stock_data = stock_data.sort_values(['Trading time'])
+    
+    # Fill empty prices with NaN for proper handling
+    stock_data['Last'] = pd.to_numeric(stock_data['Last'], errors='coerce')
     
     # Verify we have all required stocks
     found_stocks = set(stock_data['ID'].unique())
@@ -50,7 +58,7 @@ def load_stock_data():
 
 async def fetch_stock_data() -> Dict:
     """Fetch the next batch of stock data"""
-    global current_index, stock_data
+    global current_index, stock_data, last_known_prices
     
     if stock_data is None:
         load_stock_data()
@@ -60,7 +68,7 @@ async def fetch_stock_data() -> Dict:
         current_index = 0
         logger.info("Reached end of data, starting over")
     
-    # Get all records for the current timestamp
+    # Get current timestamp and find all records for this timestamp
     current_time = stock_data.iloc[current_index]['Trading time']
     current_batch = stock_data[stock_data['Trading time'] == current_time]
     
@@ -71,33 +79,42 @@ async def fetch_stock_data() -> Dict:
         "stocks": {}
     }
     
-    # Add data for allowed stocks
+    # Process each allowed stock
     for stock_id in ALLOWED_STOCKS:
         stock_row = current_batch[current_batch['ID'] == stock_id]
+        
         if not stock_row.empty:
-            current_data["stocks"][stock_id] = {
-                "price": float(stock_row.iloc[0]['Last']),
-                "sec_type": stock_row.iloc[0]['SecType']
-            }
-        else:
-            # If no data for this stock at this timestamp, use previous known price
-            last_known = stock_data[
-                (stock_data['ID'] == stock_id) & 
-                (stock_data['Trading time'] < current_time)
-            ].iloc[-1] if not stock_data[
-                (stock_data['ID'] == stock_id) & 
-                (stock_data['Trading time'] < current_time)
-            ].empty else None
+            price = stock_row.iloc[0]['Last']
+            if pd.isna(price):  # If price is empty/NaN
+                if last_known_prices[stock_id] is not None:
+                    price = last_known_prices[stock_id]
+                    logger.debug(f"Using last known price {price} for {stock_id}")
+            else:
+                last_known_prices[stock_id] = float(price)
+                logger.debug(f"Updated last known price to {price} for {stock_id}")
             
-            if last_known is not None:
+            if not pd.isna(price):  # Only add if we have a valid price
                 current_data["stocks"][stock_id] = {
-                    "price": float(last_known['Last']),
-                    "sec_type": last_known['SecType'],
-                    "price_type": "last_known"  # Indicate this is not current data
+                    "price": float(price),
+                    "sec_type": stock_row.iloc[0]['SecType'],
+                    "price_type": "last_known" if pd.isna(stock_row.iloc[0]['Last']) else "current"
                 }
+        else:
+            # If no data for this stock at this timestamp, use last known price
+            if last_known_prices[stock_id] is not None:
+                current_data["stocks"][stock_id] = {
+                    "price": last_known_prices[stock_id],
+                    "sec_type": stock_data[stock_data['ID'] == stock_id].iloc[-1]['SecType'],
+                    "price_type": "last_known"
+                }
+                logger.debug(f"No data for {stock_id}, using last known price {last_known_prices[stock_id]}")
     
     # Move to next timestamp
-    current_index += len(current_batch)
+    next_time_idx = stock_data[stock_data['Trading time'] > current_time].index
+    if len(next_time_idx) > 0:
+        current_index = next_time_idx[0]
+    else:
+        current_index = 0  # Reset to beginning if no next timestamp
     
     return current_data
 

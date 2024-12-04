@@ -56,8 +56,10 @@ def calculate_ema(stock_id: str, current_price: float, period: int, ema_dict: Di
     Calculate EMA according to the formula:
     EMAᵗₛ,ᵢ = (closeₛ,ᵢ * (2/(1+j))) + EMAᵗ⁻¹ₛ,ᵢ * (1 - (2/(1+j)))
     """
-    if stock_id not in ema_dict:
-        ema_dict[stock_id] = 0  # Initial EMA₀ₛ,ᵢ = 0
+    if stock_id not in ema_dict or ema_dict[stock_id] == 0:
+        # Initialize with current price if no previous EMA
+        ema_dict[stock_id] = current_price
+        return current_price
     
     # Calculate multiplier (2/(1+j))
     multiplier = 2 / (1 + period)
@@ -112,6 +114,7 @@ def calculate_statistics(stock_id: str, current_price: float) -> Dict:
             "samples_collected": len(stock_prices.get(stock_id, []))
         }
     
+    # Initialize price history for this stock if not exists
     if stock_id not in stock_prices:
         stock_prices[stock_id] = []
     
@@ -122,6 +125,12 @@ def calculate_statistics(stock_id: str, current_price: float) -> Dict:
         stock_prices[stock_id] = stock_prices[stock_id][-100:]
     
     try:
+        # Initialize EMAs if needed
+        if stock_id not in previous_emas_38:
+            previous_emas_38[stock_id] = 0
+        if stock_id not in previous_emas_100:
+            previous_emas_100[stock_id] = 0
+        
         # Calculate both EMAs
         ema38 = calculate_ema(stock_id, safe_current_price, 38, previous_emas_38)
         ema100 = calculate_ema(stock_id, safe_current_price, 100, previous_emas_100)
@@ -154,8 +163,8 @@ def calculate_statistics(stock_id: str, current_price: float) -> Dict:
                 if safe_price_change_percent is not None:
                     stats["price_change_percent"] = safe_price_change_percent
         
-        # Only detect breakout if we have valid EMAs
-        if safe_ema38 is not None and safe_ema100 is not None:
+        # Only detect breakout if we have valid EMAs and enough samples
+        if safe_ema38 is not None and safe_ema100 is not None and len(stock_prices[stock_id]) > 2:
             breakout = detect_breakout_patterns(stock_id, safe_ema38, safe_ema100)
             if breakout:
                 stats["breakout"] = breakout

@@ -18,13 +18,14 @@ app = FastAPI(title="Stock Data Broadcasting Service")
 # Store active websocket connections
 active_connections: List[WebSocket] = []
 
-# Global variable to store the data
+# Global variables to store the data
 stock_data = None
 current_index = 0
+stock_ids = None
 
 def load_stock_data():
     """Load stock data from CSV file"""
-    global stock_data
+    global stock_data, stock_ids
     csv_path = '../data/extracted_stocks.csv'
     
     if not os.path.exists(csv_path):
@@ -33,17 +34,20 @@ def load_stock_data():
     logger.info(f"Loading stock data from {csv_path}")
     stock_data = pd.read_csv(csv_path)
     stock_data = stock_data.sort_values(['Trading time'])
-    logger.info(f"Loaded {len(stock_data)} records for {len(stock_data['ID'].unique())} stocks")
+    
+    # Get unique stock IDs and ensure we have exactly 5
+    stock_ids = sorted(stock_data['ID'].unique())
+    if len(stock_ids) != 5:
+        logger.warning(f"Expected 5 stocks, but found {len(stock_ids)}")
+    
+    logger.info(f"Loaded {len(stock_data)} records for stocks: {stock_ids}")
 
 async def fetch_stock_data() -> Dict:
     """Fetch the next batch of stock data"""
-    global current_index, stock_data
+    global current_index, stock_data, stock_ids
     
-    if stock_data is None:
+    if stock_data is None or stock_ids is None:
         load_stock_data()
-    
-    # Get current timestamp's data
-    current_data = {}
     
     # Reset index if we've reached the end
     if current_index >= len(stock_data):
@@ -54,14 +58,37 @@ async def fetch_stock_data() -> Dict:
     current_time = stock_data.iloc[current_index]['Trading time']
     current_batch = stock_data[stock_data['Trading time'] == current_time]
     
-    for _, row in current_batch.iterrows():
-        stock_id = row['ID']
-        current_data[stock_id] = {
-            "price": row['Last'],
-            "trading_time": row['Trading time'],
-            "trading_date": row['Trading date'],
-            "sec_type": row['SecType']
-        }
+    # Prepare the data structure
+    current_data = {
+        "trading_time": current_time,
+        "trading_date": current_batch.iloc[0]['Trading date'],
+        "stocks": {}
+    }
+    
+    # Add data for all stocks
+    for stock_id in stock_ids:
+        stock_row = current_batch[current_batch['ID'] == stock_id]
+        if not stock_row.empty:
+            current_data["stocks"][stock_id] = {
+                "price": float(stock_row.iloc[0]['Last']),
+                "sec_type": stock_row.iloc[0]['SecType']
+            }
+        else:
+            # If no data for this stock at this timestamp, use previous known price
+            last_known = stock_data[
+                (stock_data['ID'] == stock_id) & 
+                (stock_data['Trading time'] < current_time)
+            ].iloc[-1] if not stock_data[
+                (stock_data['ID'] == stock_id) & 
+                (stock_data['Trading time'] < current_time)
+            ].empty else None
+            
+            if last_known is not None:
+                current_data["stocks"][stock_id] = {
+                    "price": float(last_known['Last']),
+                    "sec_type": last_known['SecType'],
+                    "price_type": "last_known"  # Indicate this is not current data
+                }
     
     # Move to next timestamp
     current_index += len(current_batch)
@@ -91,7 +118,7 @@ async def stock_data_worker():
         try:
             data = await fetch_stock_data()
             await broadcast_stock_data(data)
-            logger.info(f"Broadcast data for {len(data)} stocks")
+            logger.info(f"Broadcast data for {len(data['stocks'])} stocks at {data['trading_time']}")
             await asyncio.sleep(1)  # Stream data every second
         except Exception as e:
             logger.error(f"Error in worker: {e}")

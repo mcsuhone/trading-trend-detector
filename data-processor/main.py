@@ -1,17 +1,28 @@
 import asyncio
 import json
 import websockets
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from datetime import datetime
 import logging
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Stock Data Consumer Service")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with your frontend URL
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Store the latest tick data
 latest_tick_data: Dict = {}
@@ -205,6 +216,96 @@ async def get_stock(stock_id: str):
         "trading_date": latest_tick_data["trading_date"],
         "data": stock_data
     }
+
+@app.get("/api/stocks")
+async def get_stocks_data():
+    """
+    Get current EMA values and prices for all stocks.
+    Returns:
+        List of stocks with their current prices, EMAs, and any breakout patterns
+    """
+    if not latest_tick_data or "stocks" not in latest_tick_data:
+        raise HTTPException(status_code=404, detail="No stock data available")
+    
+    stocks_data = []
+    for stock_id, stock_info in latest_tick_data["stocks"].items():
+        stock_data = {
+            "stock_id": stock_id,
+            "timestamp": latest_tick_data["timestamp"],
+            "trading_time": latest_tick_data["trading_time"],
+            "trading_date": latest_tick_data["trading_date"],
+            "current_price": stock_info.get("current_price"),
+            "ema38": stock_info.get("ema38"),
+            "ema100": stock_info.get("ema100"),
+            "breakout": stock_info.get("breakout"),
+            "price_change": stock_info.get("price_change"),
+            "price_change_percent": stock_info.get("price_change_percent")
+        }
+        stocks_data.append(stock_data)
+    
+    return JSONResponse(content={
+        "timestamp": latest_tick_data["timestamp"],
+        "stocks": stocks_data
+    })
+
+@app.get("/api/stocks/{stock_id}/ema")
+async def get_stock_ema(stock_id: str):
+    """
+    Get detailed EMA information for a specific stock
+    Args:
+        stock_id: The ID of the stock to get EMA data for
+    Returns:
+        Detailed EMA and price information for the specified stock
+    """
+    if not latest_tick_data or "stocks" not in latest_tick_data:
+        raise HTTPException(status_code=404, detail="No stock data available")
+    
+    stock_data = latest_tick_data["stocks"].get(stock_id)
+    if not stock_data:
+        raise HTTPException(status_code=404, detail=f"No data available for stock {stock_id}")
+    
+    return JSONResponse(content={
+        "stock_id": stock_id,
+        "timestamp": latest_tick_data["timestamp"],
+        "trading_time": latest_tick_data["trading_time"],
+        "trading_date": latest_tick_data["trading_date"],
+        "data": {
+            "current_price": stock_data.get("current_price"),
+            "ema38": stock_data.get("ema38"),
+            "ema100": stock_data.get("ema100"),
+            "breakout": stock_data.get("breakout"),
+            "price_change": stock_data.get("price_change"),
+            "price_change_percent": stock_data.get("price_change_percent"),
+            "samples_collected": stock_data.get("samples_collected")
+        }
+    })
+
+@app.get("/api/breakouts")
+async def get_breakouts():
+    """
+    Get all stocks that are currently showing breakout patterns
+    Returns:
+        List of stocks with active breakout patterns
+    """
+    if not latest_tick_data or "stocks" not in latest_tick_data:
+        raise HTTPException(status_code=404, detail="No stock data available")
+    
+    breakouts = []
+    for stock_id, stock_info in latest_tick_data["stocks"].items():
+        if "breakout" in stock_info:
+            breakouts.append({
+                "stock_id": stock_id,
+                "breakout_type": stock_info["breakout"],
+                "current_price": stock_info.get("current_price"),
+                "ema38": stock_info.get("ema38"),
+                "ema100": stock_info.get("ema100"),
+                "trading_time": latest_tick_data["trading_time"]
+            })
+    
+    return JSONResponse(content={
+        "timestamp": latest_tick_data["timestamp"],
+        "breakouts": breakouts
+    })
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8002, reload=True)
